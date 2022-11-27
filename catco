@@ -1,0 +1,286 @@
+#define start_pause_pin 12
+#define record_pin 7
+#define ENABLE_EEPROM_PIN 2
+// đèn báo
+#define led_pin 13
+// tốc độ nhanh chậm
+#define delay_toc_do 5
+//cài pin vào analog
+byte pin_analog[servo_max] = { A0 };
+// cài đặt pin ra cho servo
+byte pin_servo[servo_max] = { 3 };
+// có 5 servo
+unsigned int A0_value;
+
+byte get_goc(byte servo_i)
+{
+// tính toán lấy giá trị góc của biến trở i
+switch (servo_i) {
+    case 0:
+        A0_value = constrain(analogRead(A0), 200, 823);
+        return map(A0_value, 200, 823, 0, 180);
+        break;
+    default:
+        break;
+}
+}
+// kích thước eeprom (số byte) trên arduino của bạn
+// trong ví dụ này mình dùng arduino uno r3 có 1024 bytes EEPROM
+const unsigned int SIZE_MEMORY_EEPROM = 1024;
+
+///////////////////////////////////////////////////////////////////////////////////
+/////////////////////////MAIN CODE- ////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+#include <EEPROM.h>
+#include <Servo.h>
+
+Servo servo[servo_max];
+//pin button
+int step_move = 0;
+/* mảng lưu góc cho 5 servo, 90 là giá trị góc khởi tạo cho toàn bộ phần tử*/
+
+byte goc_servo[servo_max][step_max];
+// mảng 2 chiều quản lý (servo_max) servo
+byte goc_tam_thoi[servo_max] = { 90 };
+// lưu góc tạm thời tại thời điểm cần tính
+void setup()
+{
+    pinMode(led_pin, OUTPUT);
+    //2 pin button
+    //Serial.begin(9600);
+    pinMode(start_pause_pin, INPUT_PULLUP);
+    pinMode(ENABLE_EEPROM_PIN, INPUT_PULLUP);
+    pinMode(record_pin, INPUT_PULLUP);
+    // cài chế độ 5 pin analog
+    for (byte i = 0; i < servo_max; i++) {
+        pinMode(pin_analog[i], INPUT);
+        servo[i].attach(pin_servo[i]);
+    }
+
+    ADCSRA = ((ADCSRA & (B11111000)) | B00000100); // Cài tần số quét analog 1mhz
+
+    learn_and_move(); // chạy hàm
+}
+
+void move_servo(byte i, byte goc_i)
+{
+    servo[i].write(goc_i);
+}
+void nhap_nhay(unsigned int time_delay, byte count)
+{
+    for (byte i = 0; i < count; i++) {
+
+        digitalWrite(led_pin, HIGH);
+        delay(time_delay);
+        digitalWrite(led_pin, LOW);
+        delay(time_delay * 2);
+}
+}
+void record(unsigned int step_x)
+{
+    for (byte i = 0; i < servo_max; i++) {
+	    goc_servo[i][step_x] = get_goc(i);
+    }
+    nhap_nhay(100, 2);
+    Serial.println(goc_servo[0][step_x]);
+}
+
+void move_all()
+{
+for (byte i = 0; i < servo_max; i++) {
+    move_servo(i, goc_tam_thoi[i]);
+    } // di chuyển
+}
+void control_servo()
+{
+	byte hieu;
+    for (byte i = 0; i < servo_max; i++) {
+        hieu = abs(goc_tam_thoi[i] - get_goc(i));
+        if ((hieu >= 1) && (hieu < 170)) { // chống nhiễu
+            // bạn cũng không được di chuyển arm điều khiển quá nhanh
+            goc_tam_thoi[i] = get_goc(i);
+            }
+        } // lấy góc
+    move_all();
+}
+
+void nap_eeprom_sang_ram()
+{
+
+    // nạp eeprom sang RAM
+
+    step_move = EEPROM.read(SIZE_MEMORY_EEPROM - 1); // lấy lại step_move từ rom
+    for (byte i = 0; i < servo_max; i++) {
+        for (int step_j = 0; step_j < step_max; step_j++) {
+        goc_servo[i][step_j] = EEPROM.read(step_j + i * step_max);
+        //nạp dữ liệu từ rom sang ram
+    }
+    }
+}
+
+void luu_vao_eeprom()
+{
+    // bước 1: lưu dữ liệu vào rom
+
+    EEPROM.write(SIZE_MEMORY_EEPROM - 1, step_move); // ghi step_move vào rom
+    delay(15); // đợi 15ms để hoàn thành ghi 1 ô nhớ
+
+    nhap_nhay(500, 3);
+    digitalWrite(led_pin, HIGH); // giữ nguyên đèn
+    for (byte i = 0; i < servo_max; i++) {
+    //Serial.print("luu");
+    //Serial.println(i);
+        for (int step_j = 0; step_j < step_move; step_j++) {
+            EEPROM.write(step_j + i * step_max, goc_servo[i][step_j]);
+            //nạp dữ liệu từ ram vào rom
+            delay(15); // đợi 15ms để hoàn thành ghi 1 ô nhớ
+        }
+    }
+    nhap_nhay(500, 3);
+
+    digitalWrite(led_pin, LOW); // tắt đèn
+}
+void pause()
+{
+    // chỉ được lưu dữ liệu vào eeprom khi đã có dữ liệu
+    // nhấn pause trước, sau đó mới nhấn nút ENABLE_EEPROM_PIN để bắt đầu ghi vào eeprom
+    //
+    if (digitalRead(start_pause_pin) == 0) {
+
+        while (true) {
+            digitalWrite(led_pin, 1);
+            delay(300); // chống nhiễu
+            Serial.println("PAUSE");
+
+            if (digitalRead(ENABLE_EEPROM_PIN) == 0) {
+                // nhấn lưu eeprom
+                delay(300);
+                luu_vao_eeprom();
+            }
+            if (digitalRead(start_pause_pin) == 0) {
+                Serial.println("START");
+                digitalWrite(led_pin, 0);
+                delay(300); // chống nhiễu
+                goto out_pause;
+        }
+
+    } //while
+    } //if
+    out_pause:;
+    // thoát lặp
+}
+
+void auto_move()
+{
+    Serial.println(step_move);
+    nhap_nhay(50, 3);
+    float hieu_f[servo_max];
+    unsigned int step = 0, step_next;
+    byte time;
+    byte thay_doi;
+    while (true) {
+    //lấy hiệu góc hiện tại và góc sau
+
+    if (step < step_move) {
+    step_next = step + 1; // không viết : step++
+    }
+    else {
+    /*step = step_mov :thì step tiếp theo của step cuối cùng là step đầu tiên*/
+    step_next = 0;
+    }
+
+    for (byte i = 0; i < servo_max; i++) {
+        hieu_f[i] = (float(goc_servo[i][step]) - float(goc_servo[i][step_next]));
+    }
+
+    Serial.println(step);
+    Serial.println(goc_servo[0][step]);
+    Serial.println(goc_servo[0][step_next]);
+    Serial.println(hieu_f[0]);
+    //int denta;
+    /*vận tốc sẽ tăng dần khi khởi đầu, đạt max, vận tốc giảm dần khi ở cuối quá trình
+    */
+    for (float loading = 1.0; loading <= 100.0; loading++) {
+    //denta=30+((sq(loading-150))/1000);
+    // loading là phần trăm %, đánh giá kết thúc 1 động tác là 100%
+        for (byte i = 0; i < servo_max; i++) {
+            goc_tam_thoi[i] = byte(float(goc_servo[i][step]) - (((hieu_f[i]) * loading) / 100.0));
+    }
+    Serial.print(loading);
+    Serial.print("‚");
+    Serial.print(hieu_f[0]);
+    Serial.print("‚");
+    Serial.println(goc_tam_thoi[0]);
+    // gia tốc từ chậm->nhanh->chậm
+
+    if ((loading >= 0.0) && (loading < 20.0)) {
+        time = delay_toc_do * 2 + 5;
+    }
+    else if (loading < 30.0) {
+        time = delay_toc_do / 2 + 5;
+    }
+    else if (loading < 90.0) {
+        time = delay_toc_do + 5;
+    }
+    else {
+        time = delay_toc_do * 2 + 5;
+    }
+
+// delay(delay_toc_do);
+while ((millis() % delay_toc_do) != 0) { // làm trễ
+    /* cứ sau denta_ms, vòng lặp mới được thoát, */
+
+    pause();
+    } //while
+/*
+move_all();
+} // for_loading
+if (step < step_move) {
+step++; // tăng cho lần kế tiếp
+}
+else {
+/* step = step_move*/
+step = 0; // lại từ đầu
+}
+
+    //kết thúc 1 động tác
+    delay(100);
+    } //while
+}
+
+void learn_and_move()
+{
+    step_move = 0;
+
+    while (digitalRead(start_pause_pin) != 0) {
+        //b1: điều khiển servo bằng biến trở
+        while (digitalRead(record_pin) != 0)
+             {control_servo();
+            if ((digitalRead(start_pause_pin) == 0) && (step_move == 0)) {
+                // nếu chưa có cài đặt nào mà vô thẳng phần chạy thì hiểu : lấy cài đặt từ eeprom
+                nap_eeprom_sang_ram();
+            }
+
+        if ((digitalRead(start_pause_pin) == 0) && (step_move != 0)) {
+            goto buoc_3;
+        }
+        //delay(1);// bỏ delay luôn
+        }
+        // nút record đươcj nhấn, thoát lặp
+        // b2: lưu vào mảng
+        record(step_move);
+        if (step_move < step_max) {
+            step_move++; // tăng step cho bước sau
+        }
+    }
+    // nút start_pause được nhấn, thoát lặp
+    buoc_3:
+
+    step_move--; //không có bước sau, giảm step_move xuống 1 đơn vị
+    //b4:auto move
+    auto_move();
+}
+
+void loop()
+{
+} // loop
